@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+egui = { git = "https://github.com/emilk/egui", rev = "eb873d5fe50a99c48a448bf56bf071bd61d1c218" }
+egui-wgpu ={ git = "https://github.com/emilk/egui", rev = "eb873d5fe50a99c48a448bf56bf071bd61d1c218", features = ["winit", "wayland"] } # { version = "0.28.1", features = ["winit", "wayland"] }
+egui-winit = { git = "https://github.com/emilk/egui", rev = "eb873d5fe50a99c48a448bf56bf071bd61d1c218" } # "0.28.1"
 env_logger = "0.11.3"
 futures = "0.3.30"
 log = "0.4.22"

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use egui_wgpu::Renderer;
 use winit::window::Window;
 
 pub struct State<'a> {
@@ -8,6 +9,9 @@ pub struct State<'a> {
     pub(crate) queue: wgpu::Queue,
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) size: winit::dpi::PhysicalSize<u32>,
+
+    pub(crate) egui_renderer: Renderer,
+    pub(crate) egui_winit_state: egui_winit::State,
 
     // Needs to be declared after surface
     window: Arc<Window>,
@@ -42,7 +46,7 @@ impl<'a> State<'a> {
         ).await.expect("Failed to create device");
 
         let surface_capabilities = surface.get_capabilities(&adapter);
-        let sorface_format = surface_capabilities.formats.iter()
+        let surface_format = surface_capabilities.formats.iter()
             .find(|format| {
                 format.is_srgb()
             })
@@ -51,21 +55,41 @@ impl<'a> State<'a> {
 
         let present_mode = surface_capabilities.present_modes.iter()
             .find(|mode| {
-                **mode == wgpu::PresentMode::Mailbox
+                **mode == wgpu::PresentMode::Fifo
             })
             .copied()
             .unwrap_or(surface_capabilities.present_modes[0]);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: sorface_format,
+            format: surface_format,
             width: size.width,
             height: size.height,
             present_mode,
             alpha_mode: surface_capabilities.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 1,
+            view_formats: Default::default(),
+            desired_maximum_frame_latency: 2,
         };
+
+        let egui_ctx = egui::Context::default();
+        let egui_winit_state = {
+            let mut egui_winit_state = egui_winit::State::new(
+                egui_ctx,
+                egui::ViewportId::ROOT,
+                window.as_ref(),
+                None,
+                None
+            );
+            egui_winit_state.set_max_texture_side(device.limits().max_texture_dimension_2d as usize);
+            egui_winit_state
+        };
+
+        let egui_renderer = Renderer::new(
+            &device,
+            config.format,
+            None,
+            1
+        );
 
         Self {
             surface,
@@ -74,6 +98,8 @@ impl<'a> State<'a> {
             config,
             size,
             window,
+            egui_renderer,
+            egui_winit_state,
         }
     }
 
@@ -95,30 +121,92 @@ impl<'a> State<'a> {
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
 
-        {
-            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::RED),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-        }
+        let gui_buffers = {
+            let raw_input = self.egui_winit_state.take_egui_input(self.window.as_ref());
+            let full_output = self.egui_winit_state.egui_ctx().run(raw_input, |context| {
+                // Draw your UI here
+                egui::CentralPanel::default().show(&context, |ui| {
+                    ui.heading("Hello, egui!");
+                    ui.label("This is a simple egui window.");
+                });
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+                // draw box
+                let painter = context.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(0)));
+                painter.circle_filled(egui::Pos2::new(100.0,100.0),50.0, egui::Color32::from_rgb(0, 255, 0));
+
+            });
+            self.egui_winit_state.handle_platform_output(self.window.as_ref(), full_output.platform_output);
+                
+            let clipped_primitives = self
+                .egui_winit_state
+                .egui_ctx()
+                .tessellate(full_output.shapes, full_output.pixels_per_point);
+
+            let screen_descriptors = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: self.size.into(),
+                pixels_per_point: full_output.pixels_per_point
+            };
+
+            for (id, image_delta) in &full_output.textures_delta.set {
+                self.egui_renderer.update_texture(
+                    &self.device,
+                    &self.queue,
+                    *id,
+                    image_delta,
+                );
+            }
+
+            let command_buffers = self.egui_renderer.update_buffers(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &clipped_primitives,
+                &screen_descriptors
+            );
+
+
+            {
+                let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+
+                self.egui_renderer.render(
+                    &mut render_pass,
+                    &clipped_primitives,
+                    &screen_descriptors, 
+                );
+            }
+
+            for id in &full_output.textures_delta.free {
+                self.egui_renderer.free_texture(id);
+            }
+
+            command_buffers
+        };
+
+        let mut command_buffers = vec![];
+        command_buffers.extend(gui_buffers);
+        command_buffers.push(encoder.finish());
+
+        self.queue.submit(command_buffers);
         output.present();
 
         Ok(())
