@@ -107,6 +107,7 @@ pub mod osu_replay {
     }
 
     #[allow(dead_code)]
+    #[derive(Debug)]
     pub struct ReplayData {
         // w 	Long 	Time in milliseconds since the previous action
         pub(crate) time: i64,
@@ -115,6 +116,7 @@ pub mod osu_replay {
         // y 	Float 	y-coordinate of the cursor from 0 - 384
         pub(crate) y: f32,
         pub(crate) keys: i32,
+        pub(crate) total_time: u64,
     }
 
     #[allow(dead_code)]
@@ -132,17 +134,26 @@ pub mod osu_replay {
             lzma::Reader::from(&replay_data_compressed[..]).unwrap()
                 .read_to_string(&mut data).unwrap();
 
+            let mut total_time = 0;
+
             data
                 .split(",")
                 .filter(|piece| !piece.is_empty())
                 .map(|piece| {
                     let mut parts = piece.split("|");
-                    ReplayData {
+                    let data = ReplayData {
                         time: parts.next().unwrap().parse().unwrap(),
                         x: parts.next().unwrap().parse().unwrap(),
                         y: parts.next().unwrap().parse().unwrap(),
                         keys: parts.next().unwrap().parse().unwrap(),
+                        total_time,
+                    };
+
+                    if data.time >= 0 {
+                        total_time += data.time as u64;
                     }
+
+                    data
                 })
                 // Filter out rng seed 
                 .filter(|data| data.time != -12345)
