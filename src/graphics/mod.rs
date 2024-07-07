@@ -3,6 +3,8 @@ use std::sync::Arc;
 use egui_wgpu::Renderer;
 use winit::window::Window;
 
+use crate::gui::Gui;
+
 pub struct State<'a> {
     pub(crate) surface: wgpu::Surface<'a>,
     pub(crate) device: wgpu::Device,
@@ -12,6 +14,8 @@ pub struct State<'a> {
 
     pub(crate) egui_renderer: Renderer,
     pub(crate) egui_winit_state: egui_winit::State,
+
+    pub(crate) gui: Gui,
 
     // Needs to be declared after surface
     window: Arc<Window>,
@@ -100,6 +104,7 @@ impl<'a> State<'a> {
             window,
             egui_renderer,
             egui_winit_state,
+            gui: Gui::new(),
         }
     }
 
@@ -130,15 +135,7 @@ impl<'a> State<'a> {
             let raw_input = self.egui_winit_state.take_egui_input(self.window.as_ref());
             let full_output = self.egui_winit_state.egui_ctx().run(raw_input, |context| {
                 // Draw your UI here
-                egui::CentralPanel::default().show(&context, |ui| {
-                    ui.heading("Hello, egui!");
-                    ui.label("This is a simple egui window.");
-                });
-
-                // draw box
-                let painter = context.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(0)));
-                painter.circle_filled(egui::Pos2::new(100.0,100.0),50.0, egui::Color32::from_rgb(0, 255, 0));
-
+                self.gui.render(context)
             });
             self.egui_winit_state.handle_platform_output(self.window.as_ref(), full_output.platform_output);
                 

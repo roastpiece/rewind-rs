@@ -1,5 +1,6 @@
 mod app;
 mod graphics;
+mod gui;
 
 fn main() {
     env_logger::init();

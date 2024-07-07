@@ -25,9 +25,14 @@ impl<'a> ApplicationHandler for App<'a> {
         window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
+        let window = self.state.as_ref().expect("State not created").window();
         let state = self.state.as_mut().expect("State not created");
 
-        if window_id == state.window().id() {
+        if window_id == state.window().id() && !state.gui.handle_event(
+                &mut state.egui_winit_state,
+                window.as_ref(),
+                &event
+            ) {
             match event {
                 WindowEvent::CloseRequested => {
                     event_loop.exit();
