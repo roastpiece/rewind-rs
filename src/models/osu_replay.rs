@@ -3,6 +3,7 @@ pub mod osu_replay {
     use std::io::Read;
     use std::path::Path;
 
+    #[allow(dead_code)]
     pub struct OsuReplay {
         pub(crate) gamemode: Gamemode,
         pub(crate) version: u32,
@@ -21,10 +22,9 @@ pub mod osu_replay {
         pub(crate) mods: u32,
         pub(crate) life_bar_graph: String,
         pub(crate) timestamp: u64,
-        pub(crate) replay_data_length: u32,
-        pub(crate) replay_data_compressed: Vec<u8>,
         pub(crate) online_score_id: u64,
         pub(crate) additional_mod_info: Option<f64>,
+        pub(crate) replay_data: Vec<ReplayData>,
     }
 
     pub enum Gamemode {
@@ -40,15 +40,16 @@ pub mod osu_replay {
             let mut data = Vec::new();
             file.read_to_end(&mut data).unwrap();
 
-            let mut offset = 0;
-            let gamemode = match data[offset] {
-                0 => Gamemode::Standard,
-                1 => Gamemode::Taiko,
-                2 => Gamemode::CatchTheBeat,
-                3 => Gamemode::Mania,
-                _ => panic!("Invalid gamemode"),
+            let (gamemode, offset) = {
+                let (byte, offset) = read_u8(&data, 0);
+                (match byte {
+                    0 => Gamemode::Standard,
+                    1 => Gamemode::Taiko,
+                    2 => Gamemode::CatchTheBeat,
+                    3 => Gamemode::Mania,
+                    _ => panic!("Invalid gamemode"),
+                }, offset)
             };
-            offset += 1;
 
             let (version, offset) = read_u32(&data, offset);
             let (beatmap_hash, offset) = read_string(&data, offset);
@@ -61,8 +62,8 @@ pub mod osu_replay {
             let (count_katu, offset) = read_u16(&data, offset);
             let (count_miss, offset) = read_u16(&data, offset);
             let (score, offset) = read_u32(&data, offset);
-            let (max_combo, mut offset) = read_u16(&data, offset);
-            let is_perfect_combo = data[offset] == 1; offset += 1;
+            let (max_combo, offset) = read_u16(&data, offset);
+            let (is_perfect_combo, offset) = read_u8(&data, offset);
             let (mods, offset) = read_u32(&data, offset);
             let (life_bar_graph, offset) = read_string(&data, offset);
             let (timestamp, offset) = read_u64(&data, offset);
@@ -78,6 +79,8 @@ pub mod osu_replay {
                 None
             };
 
+            let replay_data = ReplayData::from_compressed_stream(replay_data_compressed);
+
             OsuReplay {
                 gamemode,
                 version,
@@ -92,15 +95,58 @@ pub mod osu_replay {
                 count_miss,
                 score,
                 max_combo,
-                is_perfect_combo,
+                is_perfect_combo: is_perfect_combo == 1,
                 mods,
                 life_bar_graph,
                 timestamp,
-                replay_data_length,
-                replay_data_compressed,
                 online_score_id,
                 additional_mod_info,
+                replay_data,
             }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub struct ReplayData {
+        // w 	Long 	Time in milliseconds since the previous action
+        pub(crate) time: i64,
+        // x 	Float 	x-coordinate of the cursor from 0 - 512
+        pub(crate) x: f32,
+        // y 	Float 	y-coordinate of the cursor from 0 - 384
+        pub(crate) y: f32,
+        pub(crate) keys: i32,
+    }
+
+    #[allow(dead_code)]
+    pub enum Keys {
+        M1 = 1,
+        M2 = 2,
+        K1 = 4,
+        K2 = 8,
+        SMOKE = 16,
+    }
+
+    impl ReplayData {
+        fn from_compressed_stream(replay_data_compressed: Vec<u8>) -> Vec<ReplayData> {
+            let mut data = String::new();
+            lzma::Reader::from(&replay_data_compressed[..]).unwrap()
+                .read_to_string(&mut data).unwrap();
+
+            data
+                .split(",")
+                .filter(|piece| !piece.is_empty())
+                .map(|piece| {
+                    let mut parts = piece.split("|");
+                    ReplayData {
+                        time: parts.next().unwrap().parse().unwrap(),
+                        x: parts.next().unwrap().parse().unwrap(),
+                        y: parts.next().unwrap().parse().unwrap(),
+                        keys: parts.next().unwrap().parse().unwrap(),
+                    }
+                })
+                // Filter out rng seed 
+                .filter(|data| data.time != -12345)
+                .collect()
         }
     }
 
