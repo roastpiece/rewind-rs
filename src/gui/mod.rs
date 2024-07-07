@@ -2,13 +2,15 @@ use egui::Context;
 use winit::window::Window;
 
 pub struct Gui {
-    color: egui::Color32,
+    picked_path: Option<String>,
+    replay: Option<crate::models::osu_replay::osu_replay::OsuReplay>,
 }
 
 impl Gui {
     pub fn new() -> Self {
         Self {
-            color: egui::Color32::from_rgb(0, 0, 0),
+            picked_path: None,
+            replay: None,
         }
     }
 
@@ -22,13 +24,24 @@ impl Gui {
                     ui.label("Hello!");
                 })
                 .clicked() {
-                    self.color = egui::Color32::from_rgb(255, 0, 0);
-                }
-        });
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        self.picked_path = Some(path.display().to_string());
+                        self.replay = Some(crate::models::osu_replay::osu_replay::OsuReplay::from_file(&path));
+                    }
+                };
 
-        // draw box
-        let painter = context.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(0)));
-        painter.circle_filled(egui::Pos2::new(100.0,100.0),50.0, self.color);
+            if let Some(path) = &self.picked_path {
+                ui.label(format!("Picked path: {}", path));
+            }
+
+            if let Some(replay) = &self.replay {
+                ui.label("Replay data:");
+                ui.label(format!("Player: {}", replay.player_name));
+                ui.label(format!("Score: {}", replay.score));
+                ui.label(format!("Max combo: {}", replay.max_combo));
+                ui.label(format!("Misses: {}", replay.count_miss));
+            }
+        });
     }
 
     pub(crate) fn handle_event(&self, egui_winit_state: &mut egui_winit::State, window: &Window, event: &winit::event::WindowEvent) -> bool {

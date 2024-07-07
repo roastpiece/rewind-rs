@@ -10,5 +10,6 @@ egui-winit = { git = "https://github.com/emilk/egui", rev = "eb873d5fe50a99c48a4
 env_logger = "0.11.3"
 futures = "0.3.30"
 log = "0.4.22"
+rfd = "0.14.1"
 wgpu = "0.20.1"
 winit = { version = "0.30.3", features = ["rwh_06"] }
