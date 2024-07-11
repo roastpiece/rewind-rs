@@ -4,7 +4,7 @@ use egui::Context;
 use rodio::{source::Buffered, Decoder, OutputStream, Sink, Source};
 use winit::window::Window;
 
-use crate::models::osu_replay::osu_replay::Keys;
+use crate::models::osu_replay::Keys;
 
 pub struct Gui {
     osu_path: Option<String>,
@@ -14,7 +14,8 @@ pub struct Gui {
 }
 
 struct LoadedReplayData {
-    replay: crate::models::osu_replay::osu_replay::OsuReplay,
+    replay: crate::models::osu_replay::OsuReplay,
+    beatmap: crate::models::osu_map::OsuMap,
     replay_path: String,
     #[allow(dead_code)] // need to store ref
     audio_output: OutputStream,
@@ -28,6 +29,7 @@ struct LoadedReplayData {
     playback_speed: f64,
     playing: bool,
     play_time: f64,
+    hit_object_index: usize,
 }
 
 impl Gui {
@@ -76,7 +78,7 @@ impl Gui {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
                         let replay_path = Some(path.display().to_string());
                         let replay =
-                            crate::models::osu_replay::osu_replay::OsuReplay::from_file(&path);
+                            crate::models::osu_replay::OsuReplay::from_file(&path);
 
                         let (_stream, handle) = OutputStream::try_default().unwrap();
                         let song_source = {
@@ -94,8 +96,13 @@ impl Gui {
                         // How to calculate offset?
                         let offset = -0.80;
 
+                        let beatmap = crate::models::osu_map::OsuMap::from_file("diff.osu");
+
+                        println!("{:?}", beatmap.difficulty);
+
                         self.replay_data = Some(LoadedReplayData {
                             replay,
+                            beatmap,
                             replay_path: replay_path.unwrap(),
                             audio_output: _stream,
                             audio_stream_handle: handle,
@@ -107,12 +114,14 @@ impl Gui {
                             playback_speed: 1.0,
                             playing: false,
                             play_time: 0.0,
+                            hit_object_index: 0,
                         });
                     }
                 };
 
                 if let Some(LoadedReplayData {
                     replay,
+                    beatmap,
                     replay_path,
                     audio_output: _,
                     audio_stream_handle,
@@ -124,6 +133,7 @@ impl Gui {
                     ref mut playback_speed,
                     ref mut playing,
                     ref mut play_time,
+                    ref mut hit_object_index,
                 }) = &mut self.replay_data
                 {
                     ui.label(format!("Picked path: {}", replay_path));
@@ -198,6 +208,10 @@ impl Gui {
                         {
                             self.slider += 1;
                         }
+
+                        while *playing && *play_time > beatmap.hit_objects[*hit_object_index].time as f64 / 1000.0 {
+                            *hit_object_index += 1;
+                        }
                     }
 
                     ui.spacing_mut().slider_width = ui.available_width() - 100.0;
@@ -216,6 +230,8 @@ impl Gui {
                         let source = audio_song_source.clone().skip_duration(
                             std::time::Duration::from_secs_f64(*play_time + audio_offset),
                         );
+                        *last_hit_sound_played_index = 0;
+
                         audio_song_sink.clear();
                         audio_song_sink.append(source);
                         if *playing {
@@ -223,12 +239,6 @@ impl Gui {
                         }
                     }
 
-                    let first = if self.slider > 20 {
-                        (self.slider - 20) as usize
-                    } else {
-                        0
-                    };
-                    let last = self.slider as usize;
 
                     let offset = egui::Vec2::new(50.0, ui.cursor().min.y + 50.0);
                     let scale = (ui.available_height() - 100.0) / 384.0;
@@ -243,51 +253,133 @@ impl Gui {
                         egui::Stroke::new(1.0, egui::Color32::from_white_alpha(255)),
                     );
 
-                    for i in first..=last {
-                        // draw arrow from last to current replay data
-                        if i > 0 {
-                            let last_data = &replay.replay_data[i - 1];
-                            let current_data = &replay.replay_data[i];
+                    {
+                        let ar = beatmap.difficulty.approach_rate;
+                        let (preempt,fade_in) = if ar < 5.0 {
+                            (
+                                (1200.0 + 600.0 * (5.0 - ar) / 5.0) / 1000.0,
+                                (800.0 + 400.0 * (5.0 - ar) / 5.0) / 1000.0,
+                            )
+                        } else if ar == 5.0 {
+                            (1.2, 0.8)
+                        }else {
+                            (
+                                (1200.0 - 750.0 * (ar - 5.0) / 5.0) / 1000.0,
+                                (800.0 - 500.0 * (ar - 5.0) / 5.0) / 1000.0,
+                            )
+                        };
+                        
+                        let first = *hit_object_index;
+                        let last = {
+                            let mut last = first;
+                            while let Some(hit_object) = beatmap.hit_objects.get(last) {
+                                if hit_object.time as f64 / 1000.0 > *play_time + preempt {
+                                    break;
+                                }
+                                last += 1;
+                            }
+                            last
+                        };
 
-                            let color = egui::Color32::from_white_alpha(
-                                ((i - first) as f32 / (last - first) as f32 * 255.0) as u8,
+                        ui.label(format!("First: {} Last: {} Preempt: {} FadeIn: {}", first, last, preempt, fade_in));
+                        ui.label(format!("Current: {} Time: {}", *hit_object_index, beatmap.hit_objects[*hit_object_index].time as f64 / 1000.0));
+
+                        for i in (first..=last).rev() {
+                            let hit_object = &beatmap.hit_objects[i];
+                            let time = hit_object.time as f64 / 1000.0;
+                            let time_to_hit = time - *play_time;
+                            let opacity = if time <= *play_time + fade_in {
+                                255
+                            } else if time <= *play_time + preempt {
+                                let time = time - (*play_time + fade_in);
+                                let opacity = time / (preempt - fade_in);
+                                let opacity = 255.0 - opacity * 255.0;
+
+                                if opacity < 0.0 {
+                                    0
+                                } else {
+                                    opacity as u8
+                                }
+                            } else { 0 };
+
+                            let color = egui::Color32::from_white_alpha(opacity);
+                            let x = hit_object.x as f32;
+                            let y = hit_object.y as f32;
+                            let size = (54.4 - 4.48 * beatmap.difficulty.circle_size) as f32 * scale;
+
+                            // hit circle
+                            ui.painter().circle(
+                                egui::Pos2::new(x * scale + offset.x, y * scale + offset.y),
+                                size,
+                                egui::Color32::from_white_alpha(0),
+                                egui::Stroke::new(3.0, color),
                             );
 
-                            ui.painter().line_segment(
-                                [
-                                    egui::Pos2::new(last_data.x as f32, last_data.y as f32) * scale
-                                        + offset,
-                                    egui::Pos2::new(current_data.x as f32, current_data.y as f32)
-                                        * scale
-                                        + offset,
-                                ],
+                            let approach_size_multiplier = 1.0 + 3.0 * (1.0 - (preempt - time_to_hit) / preempt);
+
+                            // approach circle
+                            ui.painter().circle(
+                                egui::Pos2::new(x * scale + offset.x, y * scale + offset.y),
+                                size * approach_size_multiplier as f32,
+                                egui::Color32::from_white_alpha(0),
                                 egui::Stroke::new(1.0, color),
                             );
+                        }
+                    }
 
-                            fn is_key_down(keys: i32, key: Keys) -> bool {
-                                keys & key as i32 != 0
-                            }
+                    {
+                        let first = if self.slider > 20 {
+                            (self.slider - 20) as usize
+                        } else {
+                            0
+                        };
+                        let last = self.slider as usize;
+                        for i in first..=last {
+                            // draw arrow from last to current replay data
+                            if i > 0 {
+                                let last_data = &replay.replay_data[i - 1];
+                                let current_data = &replay.replay_data[i];
 
-                            let is_k1_pressed = is_key_down(current_data.keys, Keys::K1)
-                                && !is_key_down(last_data.keys, Keys::K1);
-                            let is_k2_pressed = is_key_down(current_data.keys, Keys::K2)
-                                && !is_key_down(last_data.keys, Keys::K2);
-
-                            if is_k1_pressed || is_k2_pressed {
-                                ui.painter().circle_filled(
-                                    egui::Pos2::new(current_data.x as f32, current_data.y as f32)
-                                        * scale
-                                        + offset,
-                                    5.0,
-                                    color,
+                                let color = egui::Color32::from_white_alpha(
+                                    ((i - first) as f32 / (last - first) as f32 * 255.0) as u8,
                                 );
 
-                                if i == self.slider as usize {
-                                    if i != *last_hit_sound_played_index {
-                                        audio_stream_handle
-                                            .play_raw(hit_sound_source.clone().convert_samples())
-                                            .unwrap();
-                                        *last_hit_sound_played_index = i;
+                                ui.painter().line_segment(
+                                    [
+                                        egui::Pos2::new(last_data.x as f32, last_data.y as f32) * scale
+                                            + offset,
+                                        egui::Pos2::new(current_data.x as f32, current_data.y as f32)
+                                            * scale
+                                            + offset,
+                                    ],
+                                    egui::Stroke::new(1.0, color),
+                                );
+
+                                fn is_key_down(keys: i32, key: Keys) -> bool {
+                                    keys & key as i32 != 0
+                                }
+
+                                let is_k1_pressed = is_key_down(current_data.keys, Keys::K1)
+                                    && !is_key_down(last_data.keys, Keys::K1);
+                                let is_k2_pressed = is_key_down(current_data.keys, Keys::K2)
+                                    && !is_key_down(last_data.keys, Keys::K2);
+
+                                if is_k1_pressed || is_k2_pressed {
+                                    ui.painter().circle_filled(
+                                        egui::Pos2::new(current_data.x as f32, current_data.y as f32)
+                                            * scale
+                                            + offset,
+                                        5.0,
+                                        egui::Color32::from_rgba_premultiplied(255, 0, 255, 255),
+                                    );
+
+                                    if i == self.slider as usize {
+                                        if i != *last_hit_sound_played_index {
+                                            audio_stream_handle
+                                                .play_raw(hit_sound_source.clone().convert_samples())
+                                                .unwrap();
+                                            *last_hit_sound_played_index = i;
+                                        }
                                     }
                                 }
                             }
