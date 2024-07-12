@@ -4,7 +4,7 @@ use egui::Context;
 use rodio::{source::Buffered, Decoder, OutputStream, Sink, Source};
 use winit::window::Window;
 
-use crate::models::osu_replay::Keys;
+use crate::{graphics::object::Renderable, models::{osu_map::{ApproachRate, HitType, OverallDifficulty}, osu_replay::Keys}};
 
 pub struct Gui {
     osu_path: Option<String>,
@@ -24,12 +24,25 @@ struct LoadedReplayData {
     audio_song_source: Buffered<Decoder<BufReader<File>>>,
     hit_sound_source: Buffered<Decoder<BufReader<File>>>,
 
-    last_hit_sound_played_index: usize,
     offset: f64,
     playback_speed: f64,
     playing: bool,
     play_time: f64,
+
+    misses: Vec<Miss>,
+
     hit_object_index: usize,
+    next_hit_object_to_hit_index: usize,
+    last_hit_object_index: Option<usize>,
+    last_checked_cursor_index: usize,
+
+    pause_on_miss: bool,
+}
+
+struct Miss {
+    time: f64,
+    hit_object_index: usize,
+    cursor_position: (f64, f64),
 }
 
 impl Gui {
@@ -109,12 +122,16 @@ impl Gui {
                             audio_song_sink: sink,
                             audio_song_source: song_source,
                             hit_sound_source,
-                            last_hit_sound_played_index: 0,
                             offset,
                             playback_speed: 1.0,
                             playing: false,
                             play_time: 0.0,
                             hit_object_index: 0,
+                            next_hit_object_to_hit_index: 0,
+                            misses: Vec::new(),
+                            pause_on_miss: false,
+                            last_hit_object_index: None,
+                            last_checked_cursor_index: 0,
                         });
                     }
                 };
@@ -123,17 +140,21 @@ impl Gui {
                     replay,
                     beatmap,
                     replay_path,
-                    audio_output: _,
                     audio_stream_handle,
                     audio_song_sink,
                     audio_song_source,
                     hit_sound_source,
-                    ref mut last_hit_sound_played_index,
                     ref mut offset,
                     ref mut playback_speed,
                     ref mut playing,
                     ref mut play_time,
                     ref mut hit_object_index,
+                    ref mut next_hit_object_to_hit_index,
+                    ref mut misses,
+                    ref mut pause_on_miss,
+                    ref mut last_hit_object_index,
+                    ref mut last_checked_cursor_index,
+                    ..
                 }) = &mut self.replay_data
                 {
                     ui.label(format!("Picked path: {}", replay_path));
@@ -172,6 +193,7 @@ impl Gui {
                             .text("Playback speed")
                             .step_by(0.05),
                     );
+                    ui.checkbox(pause_on_miss, "Pause on miss");
                     ui.label(format!("Offset: {}", offset));
                     ui.label(format!("Audio offset: {}", audio_offset));
                     ui.label(format!("Replay offset: {}", replay_offset));
@@ -209,10 +231,19 @@ impl Gui {
                             self.slider += 1;
                         }
 
-                        while *playing && *play_time > beatmap.hit_objects[*hit_object_index].time as f64 / 1000.0 {
-                            *hit_object_index += 1;
+                        while *playing {
+                            if let Some(object) = beatmap.hit_objects.get(*hit_object_index) {
+                                if object.time as f64 / 1000.0 > *play_time {
+                                    break;
+                                }
+                                *hit_object_index += 1;
+                            } else {
+                                break;
+                            }
                         }
                     }
+
+                    let ApproachRate {preempt, fade_in, ..} = beatmap.difficulty.approach_rate;
 
                     ui.spacing_mut().slider_width = ui.available_width() - 100.0;
                     if ui
@@ -230,7 +261,18 @@ impl Gui {
                         let source = audio_song_source.clone().skip_duration(
                             std::time::Duration::from_secs_f64(*play_time + audio_offset),
                         );
-                        *last_hit_sound_played_index = 0;
+
+                        *last_checked_cursor_index = 0;
+                        *last_hit_object_index = None;
+
+                        *next_hit_object_to_hit_index = 0;
+                        while let Some(object) = beatmap.hit_objects.get(*next_hit_object_to_hit_index) {
+                            if object.time as f64 / 1000.0 >= *play_time - preempt {
+                                break;
+                            }
+                            *next_hit_object_to_hit_index += 1;
+                        }
+                        *hit_object_index = *next_hit_object_to_hit_index;
 
                         audio_song_sink.clear();
                         audio_song_sink.append(source);
@@ -253,23 +295,37 @@ impl Gui {
                         egui::Stroke::new(1.0, egui::Color32::from_white_alpha(255)),
                     );
 
+                    let OverallDifficulty {
+                        hit_window_50,
+                        ..
+                    } = beatmap.difficulty.overall_difficulty;
+
+                    let next_hit_object_to_hit = &beatmap.hit_objects.get(*next_hit_object_to_hit_index);
+                    let relative_hit_error = if let Some(object) = next_hit_object_to_hit {
+                        *play_time - object.time as f64 / 1000.0
+                    } else {
+                        0.0
+                    };
+
                     {
-                        let ar = beatmap.difficulty.approach_rate;
-                        let (preempt,fade_in) = if ar < 5.0 {
-                            (
-                                (1200.0 + 600.0 * (5.0 - ar) / 5.0) / 1000.0,
-                                (800.0 + 400.0 * (5.0 - ar) / 5.0) / 1000.0,
-                            )
-                        } else if ar == 5.0 {
-                            (1.2, 0.8)
-                        }else {
-                            (
-                                (1200.0 - 750.0 * (ar - 5.0) / 5.0) / 1000.0,
-                                (800.0 - 500.0 * (ar - 5.0) / 5.0) / 1000.0,
-                            )
-                        };
                         
-                        let first = *hit_object_index;
+                        let first = if relative_hit_error > hit_window_50 {
+                            if let Some(last_index) = *last_hit_object_index {
+                                if last_index != *next_hit_object_to_hit_index {
+                                    misses.push(Miss {
+                                        time: *play_time,
+                                        hit_object_index: *next_hit_object_to_hit_index,
+                                        cursor_position: (
+                                            replay.replay_data[self.slider as usize].x as f64,
+                                            replay.replay_data[self.slider as usize].y as f64,
+                                        ),
+                                    });
+                                }
+                            }
+                            *next_hit_object_to_hit_index
+                        } else {
+                            *next_hit_object_to_hit_index
+                        };
                         let last = {
                             let mut last = first;
                             while let Some(hit_object) = beatmap.hit_objects.get(last) {
@@ -282,48 +338,14 @@ impl Gui {
                         };
 
                         ui.label(format!("First: {} Last: {} Preempt: {} FadeIn: {}", first, last, preempt, fade_in));
-                        ui.label(format!("Current: {} Time: {}", *hit_object_index, beatmap.hit_objects[*hit_object_index].time as f64 / 1000.0));
+                        ui.label(format!("Current: {} Time: {}", *hit_object_index, beatmap.hit_objects.get(*hit_object_index).map(|o| o.time as f64 / 1000.0).unwrap_or(-1.0)));
+                        ui.label(format!("Current: {} Last Hit: {} Next Hit: {}", *hit_object_index, last_hit_object_index.unwrap_or(0), *next_hit_object_to_hit_index));
+                        ui.label(format!("Misses: {}", misses.len()));
 
                         for i in (first..=last).rev() {
-                            let hit_object = &beatmap.hit_objects[i];
-                            let time = hit_object.time as f64 / 1000.0;
-                            let time_to_hit = time - *play_time;
-                            let opacity = if time <= *play_time + fade_in {
-                                255
-                            } else if time <= *play_time + preempt {
-                                let time = time - (*play_time + fade_in);
-                                let opacity = time / (preempt - fade_in);
-                                let opacity = 255.0 - opacity * 255.0;
-
-                                if opacity < 0.0 {
-                                    0
-                                } else {
-                                    opacity as u8
-                                }
-                            } else { 0 };
-
-                            let color = egui::Color32::from_white_alpha(opacity);
-                            let x = hit_object.x as f32;
-                            let y = hit_object.y as f32;
-                            let size = (54.4 - 4.48 * beatmap.difficulty.circle_size) as f32 * scale;
-
-                            // hit circle
-                            ui.painter().circle(
-                                egui::Pos2::new(x * scale + offset.x, y * scale + offset.y),
-                                size,
-                                egui::Color32::from_white_alpha(0),
-                                egui::Stroke::new(3.0, color),
-                            );
-
-                            let approach_size_multiplier = 1.0 + 3.0 * (1.0 - (preempt - time_to_hit) / preempt);
-
-                            // approach circle
-                            ui.painter().circle(
-                                egui::Pos2::new(x * scale + offset.x, y * scale + offset.y),
-                                size * approach_size_multiplier as f32,
-                                egui::Color32::from_white_alpha(0),
-                                egui::Stroke::new(1.0, color),
-                            );
+                            if let Some(hit_object) = &beatmap.hit_objects.get(i) {
+                                hit_object.render(ui, beatmap, *play_time, scale, offset);
+                            }
                         }
                     }
 
@@ -334,14 +356,14 @@ impl Gui {
                             0
                         };
                         let last = self.slider as usize;
-                        for i in first..=last {
+                        for cursor_index in first..=last {
                             // draw arrow from last to current replay data
-                            if i > 0 {
-                                let last_data = &replay.replay_data[i - 1];
-                                let current_data = &replay.replay_data[i];
+                            if cursor_index > 0 {
+                                let last_data = &replay.replay_data[cursor_index - 1];
+                                let current_data = &replay.replay_data[cursor_index];
 
                                 let color = egui::Color32::from_white_alpha(
-                                    ((i - first) as f32 / (last - first) as f32 * 255.0) as u8,
+                                    ((cursor_index - first) as f32 / (last - first) as f32 * 255.0) as u8,
                                 );
 
                                 ui.painter().line_segment(
@@ -373,16 +395,93 @@ impl Gui {
                                         egui::Color32::from_rgba_premultiplied(255, 0, 255, 255),
                                     );
 
-                                    if i == self.slider as usize {
-                                        if i != *last_hit_sound_played_index {
-                                            audio_stream_handle
-                                                .play_raw(hit_sound_source.clone().convert_samples())
-                                                .unwrap();
-                                            *last_hit_sound_played_index = i;
+                                    if cursor_index == self.slider as usize {
+                                        if cursor_index != *last_checked_cursor_index {
+                                            let mut hit_object_index = *next_hit_object_to_hit_index;
+                                            while let Some(object) = beatmap.hit_objects.get(hit_object_index) {
+                                                let distance_to_object = ((current_data.x as f64 - object.x as f64).powi(2) + (current_data.y as f64 - object.y as f64).powi(2)).sqrt();
+                                                let size = 54.4 - 4.48 * beatmap.difficulty.circle_size;
+                                                let time_diff = *play_time - object.time as f64 / 1000.0;
+
+                                                // todo add grace period when hitting way too early
+                                                if time_diff.abs() > hit_window_50 {
+                                                    break;
+                                                }
+
+                                                match object.hit_type {
+                                                    HitType::Circle | HitType::Slider(_) =>
+                                                        if distance_to_object > size {
+                                                            if time_diff.abs() < hit_window_50 {
+                                                                if *pause_on_miss {
+                                                                    *playing = false;
+                                                                    audio_song_sink.pause();
+                                                                }
+                                                                misses.push(Miss {
+                                                                    time: *play_time,
+                                                                    hit_object_index: *next_hit_object_to_hit_index,
+                                                                    cursor_position: (
+                                                                        current_data.x as f64,
+                                                                        current_data.y as f64,
+                                                                    ),
+                                                                });
+                                                            }
+                                                        } else {
+                                                            audio_stream_handle
+                                                                .play_raw(hit_sound_source.clone().convert_samples())
+                                                                .unwrap();
+                                                            *last_hit_object_index = Some(hit_object_index);
+                                                            *last_checked_cursor_index = cursor_index;
+                                                            *next_hit_object_to_hit_index = hit_object_index + 1;
+                                                            break;
+                                                        }
+                                                    HitType::Spinner(_) => {}
+                                                }
+                                                hit_object_index += 1;
+                                            }
                                         }
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    {
+                        for miss in misses {
+                            let time_diff = *play_time - miss.time;
+                            if time_diff.abs() > 3.0 {
+                                continue;
+                            }
+                            let size = 54.4 - 4.48 * beatmap.difficulty.circle_size;
+                            if let Some(missed_object) = &beatmap.hit_objects.get(miss.hit_object_index) {
+                                ui.painter().circle_stroke(
+                                    egui::Pos2::new(missed_object.x as f32, missed_object.y as f32)
+                                        * scale
+                                        + offset,
+                                    size as f32 * scale,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 0, 0, 255)),
+                                );
+
+                                // draw line from circle to cursor
+                                ui.painter().line_segment(
+                                    [
+                                        egui::Pos2::new(missed_object.x as f32, missed_object.y as f32)
+                                            * scale
+                                            + offset,
+                                        egui::Pos2::new(miss.cursor_position.0 as f32, miss.cursor_position.1 as f32)
+                                            * scale
+                                            + offset,
+                                    ],
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 0, 0, 255)),
+                                );
+                            }
+
+                            ui.painter().circle_filled(
+                                egui::Pos2::new(miss.cursor_position.0 as f32, miss.cursor_position.1 as f32)
+                                    * scale
+                                    + offset,
+                                5.0,
+                                egui::Color32::from_rgba_premultiplied(255, 0, 0, 255),
+                            );
                         }
                     }
                 }

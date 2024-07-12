@@ -1,3 +1,5 @@
+pub mod object;
+
 use std::sync::Arc;
 
 use egui_wgpu::Renderer;

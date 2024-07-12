@@ -53,12 +53,27 @@ enum HitTypeBits {
     Spinner = 8,
 }
 
+#[derive(Debug, Default)]
+pub struct OverallDifficulty {
+    pub(crate) value: f64,
+    pub(crate) hit_window_300: f64,
+    pub(crate) hit_window_100: f64,
+    pub(crate) hit_window_50: f64,
+}
+
+#[derive(Debug, Default)]
+pub struct ApproachRate {
+    pub(crate) value: f64,
+    pub(crate) preempt: f64,
+    pub(crate) fade_in: f64,
+}
+
 #[derive(Default, Debug)]
 pub struct Difficulty {
     pub(crate) hit_point_drain_rate: f64,
     pub(crate) circle_size: f64,
-    pub(crate) overall_difficulty: f64,
-    pub(crate) approach_rate: f64,
+    pub(crate) overall_difficulty: OverallDifficulty,
+    pub(crate) approach_rate: ApproachRate,
     pub(crate) slider_multiplier: f64,
     pub(crate) slider_tick_rate: f64,
 }
@@ -96,8 +111,35 @@ impl OsuMap {
                 match key {
                     "HPDrainRate" => Difficulty { hit_point_drain_rate: value, ..diff },
                     "CircleSize" => Difficulty { circle_size: value, ..diff },
-                    "OverallDifficulty" => Difficulty { overall_difficulty: value, ..diff },
-                    "ApproachRate" => Difficulty { approach_rate: value, ..diff },
+                    "OverallDifficulty" => Difficulty { overall_difficulty: OverallDifficulty {
+                        value,
+                        hit_window_300: ((80 - 6) as f64 * value) / 1000.0,
+                        hit_window_100: ((140 - 8) as f64 * value) / 1000.0,
+                        hit_window_50: ((200 - 10) as f64 * value) / 1000.0,
+                    }, ..diff },
+                    "ApproachRate" => {
+                        let (preempt,fade_in) = if value < 5.0 {
+                            (
+                                (1200.0 + 600.0 * (5.0 - value) / 5.0) / 1000.0,
+                                (800.0 + 400.0 * (5.0 - value) / 5.0) / 1000.0,
+                            )
+                        } else if value == 5.0 {
+                            (1.2, 0.8)
+                        } else {
+                            (
+                                (1200.0 - 750.0 * (value - 5.0) / 5.0) / 1000.0,
+                                (800.0 - 500.0 * (value - 5.0) / 5.0) / 1000.0,
+                            )
+                        };
+                        Difficulty {
+                            approach_rate: ApproachRate {
+                                value,
+                                preempt,
+                                fade_in,
+                            },
+                            ..diff 
+                        }
+                    },
                     "SliderMultiplier" => Difficulty { slider_multiplier: value, ..diff },
                     "SliderTickRate" => Difficulty { slider_tick_rate: value, ..diff },
                     _ => unreachable!(),
