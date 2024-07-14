@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, time::SystemTime};
+use std::{fs::File, io::BufReader, path::PathBuf, time::SystemTime};
 
 use egui::Context;
 use rodio::{source::Buffered, Decoder, OutputStream, Sink, Source};
@@ -7,10 +7,16 @@ use winit::window::Window;
 use crate::{graphics::object::Renderable, models::{osu_map::{ApproachRate, HitType, OverallDifficulty}, osu_replay::Keys}};
 
 pub struct Gui {
-    osu_path: Option<String>,
+    osu_data: Option<OsuData>,
     slider: u64,
     system_time: SystemTime,
     replay_data: Option<LoadedReplayData>,
+    errors: Vec<String>,
+}
+
+struct OsuData {
+    path: PathBuf,
+    beatmaps: osu_db::listing::Listing,
 }
 
 struct LoadedReplayData {
@@ -48,10 +54,11 @@ struct Miss {
 impl Gui {
     pub fn new() -> Self {
         Self {
-            osu_path: None,
+            osu_data: None,
             slider: 0,
             system_time: SystemTime::now(),
             replay_data: None,
+            errors: Vec::new(),
         }
     }
 
@@ -73,13 +80,25 @@ impl Gui {
                 })
                 .clicked()
             {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                    self.osu_path = Some(path.display().to_string());
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("osu! database", &["db"])
+                    .pick_file()
+                {
+                    self.errors.clear();
+                    let path = path.display().to_string();
+                    let beatmaps = osu_db::listing::Listing::from_file(&path);
+                    match beatmaps {
+                        Err(e) => self.errors.push(format!("Failed to load osu! database from {}.\n{}", path, e)),
+                        Ok(beatmaps) => self.osu_data = Some(OsuData { path: path.into(), beatmaps }),
+                    }
                 }
             };
 
-            if let Some(osu_path) = &self.osu_path {
-                ui.label(format!("Osu! path: {}", osu_path));
+            if let Some(OsuData {
+                path,
+                beatmaps,
+            }) = &self.osu_data {
+                ui.label(format!("osu!.db path: {}", path.display()));
 
                 if ui
                     .button("Load replay")
@@ -88,53 +107,77 @@ impl Gui {
                     })
                     .clicked()
                 {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        let replay_path = Some(path.display().to_string());
+                    if let Some(replay_path) = rfd::FileDialog::new()
+                        .add_filter("osu! replay", &["osr"])
+                        .pick_file()
+                    {
+                        self.errors.clear();
                         let replay =
-                            crate::models::osu_replay::OsuReplay::from_file(&path);
+                            crate::models::osu_replay::OsuReplay::from_file(&replay_path);
 
-                        let (_stream, handle) = OutputStream::try_default().unwrap();
-                        let song_source = {
-                            let file = BufReader::new(File::open("audio.mp3").unwrap());
-                            Decoder::new(file).unwrap().buffered()
-                        };
-                        let sink = Sink::try_new(&handle).unwrap();
-                        sink.pause();
+                        if let Some(beatmap_listing) = beatmaps.beatmaps.iter().find(|b| b.hash == Some(replay.beatmap_hash.clone())) {
+                            let (_stream, handle) = OutputStream::try_default().unwrap();
 
-                        let hit_sound_source = {
-                            let file = BufReader::new(File::open("hit.wav").unwrap());
-                            Decoder::new(file).unwrap().buffered()
-                        };
+                            let osu_beatmap_path = path
+                                .parent().unwrap()
+                                .join("Songs")
+                                .join(beatmap_listing.folder_name.as_ref().unwrap());
 
-                        // How to calculate offset?
-                        let offset = -0.80;
+                            let audio_path = osu_beatmap_path.join(beatmap_listing.audio.as_ref().unwrap());
 
-                        let beatmap = crate::models::osu_map::OsuMap::from_file("diff.osu");
+                            let song_source = {
+                                let file = BufReader::new(File::open(audio_path).unwrap());
+                                Decoder::new(file).unwrap().buffered()
+                            };
+                            let sink = Sink::try_new(&handle).unwrap();
+                            sink.pause();
 
-                        println!("{:?}", beatmap.difficulty);
+                            let hit_sound_source = {
+                                let file = BufReader::new(File::open("hit.wav").unwrap());
+                                Decoder::new(file).unwrap().buffered()
+                            };
 
-                        self.replay_data = Some(LoadedReplayData {
-                            replay,
-                            beatmap,
-                            replay_path: replay_path.unwrap(),
-                            audio_output: _stream,
-                            audio_stream_handle: handle,
-                            audio_song_sink: sink,
-                            audio_song_source: song_source,
-                            hit_sound_source,
-                            offset,
-                            playback_speed: 1.0,
-                            playing: false,
-                            play_time: 0.0,
-                            hit_object_index: 0,
-                            next_hit_object_to_hit_index: 0,
-                            misses: Vec::new(),
-                            pause_on_miss: false,
-                            last_hit_object_index: None,
-                            last_checked_cursor_index: 0,
-                        });
+
+                            let osu_file_path = osu_beatmap_path.join(beatmap_listing.file_name.as_ref().unwrap());
+
+
+                            let beatmap = crate::models::osu_map::OsuMap::from_file(&osu_file_path);
+
+                            // How to calculate offset?
+                            let offset = -1.75 + beatmap.hit_objects[0].time as f64 / 1000.0;
+
+                            self.replay_data = Some(LoadedReplayData {
+                                replay,
+                                beatmap,
+                                replay_path: replay_path.display().to_string(),
+                                audio_output: _stream,
+                                audio_stream_handle: handle,
+                                audio_song_sink: sink,
+                                audio_song_source: song_source,
+                                hit_sound_source,
+                                offset,
+                                playback_speed: 1.0,
+                                playing: false,
+                                play_time: 0.0,
+                                hit_object_index: 0,
+                                next_hit_object_to_hit_index: 0,
+                                misses: Vec::new(),
+                                pause_on_miss: false,
+                                last_hit_object_index: None,
+                                last_checked_cursor_index: 0,
+                            });
+                        } else {
+                            self.errors.push(format!("Failed to find beatmap with hash {}.", replay.beatmap_hash));
+                        }
                     }
                 };
+
+                if self.errors.len() > 0 {
+                    ui.label("Errors");
+                    for error in &mut self.errors {
+                        ui.add_enabled(false, egui::TextEdit::multiline(error));
+                    }
+                }
 
                 if let Some(LoadedReplayData {
                     replay,
