@@ -1,6 +1,11 @@
 #![allow(dead_code)]
 use core::fmt;
-use std::{fmt::{Display, Formatter}, fs::File, io::Read, path::Path};
+use std::{
+    fmt::{Display, Formatter},
+    fs::File,
+    io::Read,
+    path::Path,
+};
 
 #[derive(Debug)]
 pub struct OsuMap {
@@ -40,8 +45,8 @@ pub struct Slider {
     pub(crate) curve_points: Vec<(f64, f64)>,
     pub(crate) repeat: u32,
     pub(crate) pixel_length: f64,
-    pub(crate) edge_sounds: Vec<u32>,
-    pub(crate) edge_sets: Vec<String>,
+    pub(crate) edge_sounds: Option<Vec<u32>>,
+    pub(crate) edge_sets: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -111,7 +116,8 @@ impl OsuMap {
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
 
-        let difficulty = data.lines()
+        let difficulty = data
+            .lines()
             .skip_while(|line| !line.starts_with("[Difficulty]"))
             .skip(1)
             .take_while(|line| !line.is_empty())
@@ -120,16 +126,25 @@ impl OsuMap {
                 let key = parts.next().unwrap();
                 let value = parts.next().unwrap().trim().parse().unwrap();
                 match key {
-                    "HPDrainRate" => Difficulty { hit_point_drain_rate: value, ..diff },
-                    "CircleSize" => Difficulty { circle_size: value, ..diff },
-                    "OverallDifficulty" => Difficulty { overall_difficulty: OverallDifficulty {
-                        value,
-                        hit_window_300: (80.0 - 6.0 * value) / 1000.0,
-                        hit_window_100: (140.0 - 8.0 * value) / 1000.0,
-                        hit_window_50: (200.0 - 10.0 * value) / 1000.0,
-                    }, ..diff },
+                    "HPDrainRate" => Difficulty {
+                        hit_point_drain_rate: value,
+                        ..diff
+                    },
+                    "CircleSize" => Difficulty {
+                        circle_size: value,
+                        ..diff
+                    },
+                    "OverallDifficulty" => Difficulty {
+                        overall_difficulty: OverallDifficulty {
+                            value,
+                            hit_window_300: (80.0 - 6.0 * value) / 1000.0,
+                            hit_window_100: (140.0 - 8.0 * value) / 1000.0,
+                            hit_window_50: (200.0 - 10.0 * value) / 1000.0,
+                        },
+                        ..diff
+                    },
                     "ApproachRate" => {
-                        let (preempt,fade_in) = if value < 5.0 {
+                        let (preempt, fade_in) = if value < 5.0 {
                             (
                                 (1200.0 + 600.0 * (5.0 - value) / 5.0) / 1000.0,
                                 (800.0 + 400.0 * (5.0 - value) / 5.0) / 1000.0,
@@ -148,16 +163,23 @@ impl OsuMap {
                                 preempt,
                                 fade_in,
                             },
-                            ..diff 
+                            ..diff
                         }
+                    }
+                    "SliderMultiplier" => Difficulty {
+                        slider_multiplier: value,
+                        ..diff
                     },
-                    "SliderMultiplier" => Difficulty { slider_multiplier: value, ..diff },
-                    "SliderTickRate" => Difficulty { slider_tick_rate: value, ..diff },
+                    "SliderTickRate" => Difficulty {
+                        slider_tick_rate: value,
+                        ..diff
+                    },
                     _ => unreachable!(),
                 }
             });
 
-        let hit_objects = data.lines()
+        let hit_objects = data
+            .lines()
             .skip_while(|line| !line.starts_with("[HitObjects]"))
             .skip(1)
             .take_while(|line| !line.is_empty())
@@ -167,10 +189,8 @@ impl OsuMap {
                 let y = parts.next().unwrap().parse().unwrap();
                 let time = parts.next().unwrap().parse().unwrap();
 
-                let hit_type = HitTypeBits::try_from(
-                    parts.next().unwrap()
-                    .parse::<u8>().unwrap()
-                ).unwrap();
+                let hit_type =
+                    HitTypeBits::try_from(parts.next().unwrap().parse::<u8>().unwrap()).unwrap();
 
                 // skip hitsound
                 let _ = parts.next().unwrap();
@@ -199,14 +219,17 @@ impl OsuMap {
 
                         let repeat = parts.next().unwrap().parse().unwrap();
                         let pixel_length = parts.next().unwrap().parse().unwrap();
-                        let edge_sounds = parts.next().unwrap()
-                            .split('|')
-                            .map(|sound| sound.parse().unwrap())
-                            .collect();
-                        let edge_sets = parts.next().unwrap()
-                            .split('|')
-                            .map(|set| set.parse().unwrap())
-                            .collect();
+
+                        let edge_sounds = parts.next().map(|next| {
+                            next.split('|')
+                                .map(|sound| sound.parse::<u32>().unwrap())
+                                .collect()
+                        });
+
+                        let edge_sets = parts
+                            .next()
+                            .map(|next| next.split('|').map(|set| set.to_string()).collect());
+
                         HitType::Slider(Slider {
                             curve_type,
                             curve_points,
@@ -215,17 +238,27 @@ impl OsuMap {
                             edge_sounds,
                             edge_sets,
                         })
-                    },
+                    }
                     HitTypeBits::Spinner => {
                         let end_time = parts.next().unwrap().parse().unwrap();
                         HitType::Spinner(Spinner { end_time })
-                    },
+                    }
                     _ => unreachable!(),
                 };
 
-                HitObject { x, y, time, hit_type, new_combo: false }
-            }).collect();
+                HitObject {
+                    x,
+                    y,
+                    time,
+                    hit_type,
+                    new_combo: false,
+                }
+            })
+            .collect();
 
-        OsuMap { difficulty, hit_objects }
+        OsuMap {
+            difficulty,
+            hit_objects,
+        }
     }
 }

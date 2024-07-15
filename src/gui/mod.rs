@@ -561,9 +561,16 @@ impl Gui {
                                 let mut hit_object_index = status.next_hit_object_to_hit_index;
                                 let mut maybe_misses = Vec::new();
 
+                                let mut break_index = 0;
                                 while let Some(object) =
                                     playback.beatmap.hit_objects.get(hit_object_index)
                                 {
+                                    if break_index > 20 {
+                                        break;
+                                    } else {
+                                        break_index += 1;
+                                    }
+
                                     let distance_to_object = ((cursor.x as f64 - object.x as f64)
                                         .powi(2)
                                         + (cursor.y as f64 - object.y as f64).powi(2))
