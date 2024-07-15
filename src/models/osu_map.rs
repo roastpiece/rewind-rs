@@ -1,5 +1,6 @@
 #![allow(dead_code)]
-use std::{fs::File, io::Read, path::Path};
+use core::fmt;
+use std::{fmt::{Display, Formatter}, fs::File, io::Read, path::Path};
 
 #[derive(Debug)]
 pub struct OsuMap {
@@ -21,6 +22,16 @@ pub enum HitType {
     Circle,
     Slider(Slider),
     Spinner(Spinner),
+}
+
+impl Display for HitType {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            HitType::Circle => write!(f, "Circle"),
+            HitType::Slider(_) => write!(f, "Slider"),
+            HitType::Spinner(_) => write!(f, "Spinner"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -113,9 +124,9 @@ impl OsuMap {
                     "CircleSize" => Difficulty { circle_size: value, ..diff },
                     "OverallDifficulty" => Difficulty { overall_difficulty: OverallDifficulty {
                         value,
-                        hit_window_300: ((80 - 6) as f64 * value) / 1000.0,
-                        hit_window_100: ((140 - 8) as f64 * value) / 1000.0,
-                        hit_window_50: ((200 - 10) as f64 * value) / 1000.0,
+                        hit_window_300: (80.0 - 6.0 * value) / 1000.0,
+                        hit_window_100: (140.0 - 8.0 * value) / 1000.0,
+                        hit_window_50: (200.0 - 10.0 * value) / 1000.0,
                     }, ..diff },
                     "ApproachRate" => {
                         let (preempt,fade_in) = if value < 5.0 {
