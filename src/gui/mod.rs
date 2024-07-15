@@ -205,7 +205,7 @@ impl Gui {
                             let beatmap = crate::models::osu_map::OsuMap::from_file(&osu_file_path);
 
                             // How to calculate offset?
-                            let offset = -1.75 + beatmap.hit_objects[0].time as f64 / 1000.0;
+                            let offset = -1.778 + beatmap.hit_objects[0].time as f64 / 1000.0;
 
                             let status = PlaybackStatus {
                                 playback_speed: 1.0,
@@ -255,15 +255,15 @@ impl Gui {
                     let ReplayPlaybackData {
                         ref replay_path,
                         ref replay,
-                        offset,
+                        offset: time_offset,
                         playback_status: ref mut status,
                         ..
                     } = *playback;
 
                     ui.label(format!("Picked path: {}", replay_path));
 
-                    let audio_offset = if offset < 0.0 { 0.0 } else { offset };
-                    let replay_offset = if offset > 0.0 { 0.0 } else { -offset };
+                    let audio_offset = if time_offset < 0.0 { 0.0 } else { time_offset };
+                    let replay_offset = if time_offset > 0.0 { 0.0 } else { -time_offset };
 
                     ui.label(format!("Beatmap: {}", replay.beatmap_hash));
                     if ui.button("Play/Pause").clicked() {
@@ -295,7 +295,7 @@ impl Gui {
                             .step_by(0.05),
                     );
                     ui.checkbox(&mut status.pause_on_miss, "Pause on miss");
-                    ui.label(format!("Offset: {}", offset));
+                    ui.label(format!("Offset: {}", time_offset));
                     ui.label(format!("Audio offset: {}", audio_offset));
                     ui.label(format!("Replay offset: {}", replay_offset));
 
@@ -436,6 +436,7 @@ impl Gui {
                                 status.successful_hit(
                                     status.next_hit_object_to_hit_index,
                                     next_hit_object_to_hit,
+                                    time_offset
                                 );
                             }
                             _ => (),
@@ -606,7 +607,7 @@ impl Gui {
                                                     status.last_checked_cursor_index = status.replay_data_index;
                                                     break;
                                                 } else {
-                                                    status.successful_hit(hit_object_index, object);
+                                                    status.successful_hit(hit_object_index, object, time_offset);
                                                     status.last_checked_cursor_index = status.replay_data_index;
                                                     break;
                                                 }
@@ -743,10 +744,13 @@ impl Gui {
 }
 
 impl PlaybackStatus {
-    fn successful_hit(&mut self, index: usize, _hit_object: &HitObject) {
+    fn successful_hit(&mut self, index: usize, _hit_object: &HitObject, offset: f64) {
         self.audio_stream_handle
             .play_raw(self.hit_sound_source.clone().amplify(self.volume as f32).convert_samples())
             .unwrap();
+
+        let time_diff = self.play_time - _hit_object.time as f64 / 1000.0;
+        println!("timing: {}", time_diff);
 
         self.next_hit_object_to_hit_index = index + 1;
         self.last_hit_object_index = Some(index);
